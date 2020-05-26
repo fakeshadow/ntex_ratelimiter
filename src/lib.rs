@@ -57,6 +57,7 @@ pub struct RateLimiter<E> {
     recycle_interval: Duration,
     max_requests: u32,
     identifier: Rc<dyn Identifier<E>>,
+    filter: Rc<dyn Filter<E>>,
     _t: PhantomData<E>,
 }
 
@@ -72,6 +73,25 @@ impl<E> Identifier<E> for DefaultIdentifier {
     }
 }
 
+pub trait Filter<E> {
+    fn filter(&self, req: &WebRequest<E>) -> BoxedFuture<FilterResult>;
+}
+
+pub enum FilterResult {
+    Skip,
+    Continue,
+}
+
+struct DefaultFilter;
+
+impl<E> Filter<E> for DefaultFilter {
+    fn filter(&self, _req: &WebRequest<E>) -> BoxedFuture<FilterResult> {
+        Box::pin(async {
+            FilterResult::Continue
+        })
+    }
+}
+
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(1800);
 const DEFAULT_RECYCLE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -82,6 +102,7 @@ impl<E> Default for RateLimiter<E> {
             recycle_interval: DEFAULT_RECYCLE_INTERVAL,
             max_requests: 3600,
             identifier: Rc::new(DefaultIdentifier),
+            filter: Rc::new(DefaultFilter),
             _t: PhantomData,
         }
     }
@@ -109,6 +130,11 @@ impl<E> RateLimiter<E> {
 
     pub fn identifier(mut self, identifier: impl Identifier<E> + 'static) -> Self {
         self.identifier = Rc::new(identifier);
+        self
+    }
+
+    pub fn filter(mut self, filter: impl Filter<E> + 'static) -> Self {
+        self.filter = Rc::new(filter);
         self
     }
 }
@@ -152,12 +178,14 @@ where
         let _tx = recycle(Some(self.interval), Some(self.recycle_interval));
         let max_requests = self.max_requests;
         let identifier = self.identifier.clone();
+        let filter = self.filter.clone();
         Box::pin(async move {
             Ok(RateLimitMiddleware {
                 service: Rc::new(service),
                 max_requests,
-                _t: PhantomData,
                 identifier,
+                filter,
+                _t: PhantomData,
             })
         })
     }
@@ -167,6 +195,7 @@ pub struct RateLimitMiddleware<S, E> {
     service: Rc<S>,
     max_requests: u32,
     identifier: Rc<dyn Identifier<E>>,
+    filter: Rc<dyn Filter<E>>,
     _t: PhantomData<E>,
 }
 
@@ -195,49 +224,55 @@ where
         let max_requests = self.max_requests;
 
         let id = self.identifier.identify(&req);
-        let rate = id.map(|id| {
-            let mut map = map().lock();
-
-            let entry = map.get_mut(&id);
-            match entry {
-                Some((count, _)) => {
-                    if *count > 0 {
-                        *count -= 1;
-                        Ok(*count)
-                    } else {
-                        Err(RateLimiterError::TooManyRequests)
-                    }
-                }
-                None => {
-                    let rate = max_requests - 1;
-                    map.insert(id.to_owned(), (rate, Instant::now()));
-                    Ok(rate)
-                }
-            }
-        });
-
+        let filter = self.filter.clone();
         let service = self.service.clone();
 
         Box::pin(async move {
-            let rate = match rate {
-                Some(Ok(rate)) => rate,
-                Some(Err(e)) => return Ok(req.error_response(e)),
-                None => return Ok(req.error_response(RateLimiterError::RemoteAddress)),
-            };
+            match filter.filter(&req).await {
+                FilterResult::Continue => {
+                    let rate = id.map(|id| {
+                        let mut map = map().lock();
 
-            let mut res = service.call(req).await?;
+                        let entry = map.get_mut(&id);
+                        match entry {
+                            Some((count, _)) => {
+                                if *count > 0 {
+                                    *count -= 1;
+                                    Ok(*count)
+                                } else {
+                                    Err(RateLimiterError::TooManyRequests)
+                                }
+                            }
+                            None => {
+                                let rate = max_requests - 1;
+                                map.insert(id.to_owned(), (rate, Instant::now()));
+                                Ok(rate)
+                            }
+                        }
+                    });
 
-            let headers = res.headers_mut();
-            headers.insert(
-                HeaderName::from_static("x-ratelimit-limit"),
-                HeaderValue::from_str(max_requests.to_string().as_str()).unwrap(),
-            );
-            headers.insert(
-                HeaderName::from_static("x-ratelimit-remaining"),
-                HeaderValue::from_str(rate.to_string().as_str()).unwrap(),
-            );
+                    let rate = match rate {
+                        Some(Ok(rate)) => rate,
+                        Some(Err(e)) => return Ok(req.error_response(e)),
+                        None => return Ok(req.error_response(RateLimiterError::RemoteAddress)),
+                    };
 
-            Ok(res)
+                    let mut res = service.call(req).await?;
+
+                    let headers = res.headers_mut();
+                    headers.insert(
+                        HeaderName::from_static("x-ratelimit-limit"),
+                        HeaderValue::from_str(max_requests.to_string().as_str()).unwrap(),
+                    );
+                    headers.insert(
+                        HeaderName::from_static("x-ratelimit-remaining"),
+                        HeaderValue::from_str(rate.to_string().as_str()).unwrap(),
+                    );
+
+                    Ok(res)
+                }
+                FilterResult::Skip => service.call(req).await,
+            }
         })
     }
 }

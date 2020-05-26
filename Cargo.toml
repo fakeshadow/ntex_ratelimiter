@@ -11,7 +11,7 @@ path = "src/lib.rs"
 [workspace]
 members = [
     "examples/basic",
-    "examples/identifier"
+    "examples/trait-object"
 ]
 
 [dependencies]

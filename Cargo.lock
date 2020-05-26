@@ -449,16 +449,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cd179ae861f0c2e53da70d892f5f3029f9594be0c41dc5269cd371691b1dc2f9"
 
 [[package]]
-name = "identifier"
-version = "0.1.0"
-dependencies = [
- "ntex",
- "ntex-rt",
- "ntex_ratelimiter",
- "tokio",
-]
-
-[[package]]
 name = "idna"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1301,6 +1291,16 @@ dependencies = [
  "futures-sink",
  "log",
  "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "trait_object"
+version = "0.1.0"
+dependencies = [
+ "ntex",
+ "ntex-rt",
+ "ntex_ratelimiter",
  "tokio",
 ]
 
