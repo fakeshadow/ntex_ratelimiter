@@ -22,7 +22,7 @@
 //!                      // run a future every 60 seconds and remove address exceed rate limit according to interval
 //!                     .recycle_interval(Duration::from_secs(60))
 //!              )
-//!             .service(web::resource("/").to(|| async { HttpResponse::Ok() })))
+//!             .service(web::resource("/").to(index)))
 //!      .bind("127.0.0.1:59880")?
 //!      .run()
 //!      .await
@@ -56,7 +56,20 @@ pub struct RateLimiter<E> {
     interval: Duration,
     recycle_interval: Duration,
     max_requests: u32,
+    identifier: Rc<dyn Identifier<E>>,
     _t: PhantomData<E>,
+}
+
+pub trait Identifier<E> {
+    fn identify(&self, req: &WebRequest<E>) -> Option<String>;
+}
+
+struct DefaultIdentifier;
+
+impl<E> Identifier<E> for DefaultIdentifier {
+    fn identify<'a>(&self, req: &WebRequest<E>) -> Option<String> {
+        req.connection_info().remote().map(String::from)
+    }
 }
 
 const DEFAULT_INTERVAL: Duration = Duration::from_secs(1800);
@@ -68,6 +81,7 @@ impl<E> Default for RateLimiter<E> {
             interval: DEFAULT_INTERVAL,
             recycle_interval: DEFAULT_RECYCLE_INTERVAL,
             max_requests: 3600,
+            identifier: Rc::new(DefaultIdentifier),
             _t: PhantomData,
         }
     }
@@ -92,12 +106,17 @@ impl<E> RateLimiter<E> {
         self.max_requests = max_requests;
         self
     }
+
+    pub fn identifier(mut self, identifier: impl Identifier<E> + 'static) -> Self {
+        self.identifier = Rc::new(identifier);
+        self
+    }
 }
 
 #[derive(Debug, From, Display)]
 pub enum RateLimiterError {
-    #[display(fmt = "Fail to extract remote IP from WebRequest<Err>")]
-    RemoteIP,
+    #[display(fmt = "Fail to extract remote address from Request")]
+    RemoteAddress,
     #[display(fmt = "Rate limit has been reached.")]
     TooManyRequests,
 }
@@ -105,7 +124,7 @@ pub enum RateLimiterError {
 impl WebResponseError<DefaultError> for RateLimiterError {
     fn status_code(&self) -> StatusCode {
         match self {
-            RateLimiterError::RemoteIP => StatusCode::BAD_REQUEST,
+            RateLimiterError::RemoteAddress => StatusCode::BAD_REQUEST,
             RateLimiterError::TooManyRequests => StatusCode::TOO_MANY_REQUESTS,
         }
     }
@@ -132,11 +151,13 @@ where
         // signal recycle to start
         let _tx = recycle(Some(self.interval), Some(self.recycle_interval));
         let max_requests = self.max_requests;
+        let identifier = self.identifier.clone();
         Box::pin(async move {
             Ok(RateLimitMiddleware {
                 service: Rc::new(service),
                 max_requests,
                 _t: PhantomData,
+                identifier,
             })
         })
     }
@@ -145,6 +166,7 @@ where
 pub struct RateLimitMiddleware<S, E> {
     service: Rc<S>,
     max_requests: u32,
+    identifier: Rc<dyn Identifier<E>>,
     _t: PhantomData<E>,
 }
 
@@ -170,36 +192,37 @@ where
     }
 
     fn call(&self, req: WebRequest<E>) -> Self::Future {
-        let service = self.service.clone();
         let max_requests = self.max_requests;
 
-        Box::pin(async move {
-            let address = req.connection_info().remote().map(String::from);
+        let id = self.identifier.identify(&req);
+        let rate = id.map(|id| {
+            let mut map = map().lock();
 
-            let rate = match address {
-                None => {
-                    return Ok(req.error_response(RateLimiterError::RemoteIP));
-                }
-                Some(id) => {
-                    let mut map = map().lock();
-
-                    let entry = map.get_mut(&id);
-                    match entry {
-                        Some((count, _)) => {
-                            if *count > 0 {
-                                *count -= 1;
-                                *count
-                            } else {
-                                return Ok(req.error_response(RateLimiterError::TooManyRequests));
-                            }
-                        }
-                        None => {
-                            let rate = max_requests - 1;
-                            map.insert(id, (rate, Instant::now()));
-                            rate
-                        }
+            let entry = map.get_mut(&id);
+            match entry {
+                Some((count, _)) => {
+                    if *count > 0 {
+                        *count -= 1;
+                        Ok(*count)
+                    } else {
+                        Err(RateLimiterError::TooManyRequests)
                     }
                 }
+                None => {
+                    let rate = max_requests - 1;
+                    map.insert(id.to_owned(), (rate, Instant::now()));
+                    Ok(rate)
+                }
+            }
+        });
+
+        let service = self.service.clone();
+
+        Box::pin(async move {
+            let rate = match rate {
+                Some(Ok(rate)) => rate,
+                Some(Err(e)) => return Ok(req.error_response(e)),
+                None => return Ok(req.error_response(RateLimiterError::RemoteAddress)),
             };
 
             let mut res = service.call(req).await?;

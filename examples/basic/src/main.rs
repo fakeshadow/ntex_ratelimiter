@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use ntex::web::{self, App, HttpServer};
-
 use ntex_ratelimiter::RateLimiter;
 
 #[web::get("/")]

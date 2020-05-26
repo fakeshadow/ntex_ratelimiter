@@ -10,7 +10,8 @@ path = "src/lib.rs"
 
 [workspace]
 members = [
-    "examples/basic"
+    "examples/basic",
+    "examples/identifier"
 ]
 
 [dependencies]
