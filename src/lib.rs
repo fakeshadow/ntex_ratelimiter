@@ -86,9 +86,7 @@ struct DefaultFilter;
 
 impl<E> Filter<E> for DefaultFilter {
     fn filter(&self, _req: &WebRequest<E>) -> BoxedFuture<FilterResult> {
-        Box::pin(async {
-            FilterResult::Continue
-        })
+        Box::pin(async { FilterResult::Continue })
     }
 }
 
@@ -175,10 +173,11 @@ where
 
     fn new_transform(&self, service: S) -> Self::Future {
         // signal recycle to start
-        let _tx = recycle(Some(self.interval), Some(self.recycle_interval));
+        let _tx = recycle(self.interval, self.recycle_interval);
         let max_requests = self.max_requests;
         let identifier = self.identifier.clone();
         let filter = self.filter.clone();
+
         Box::pin(async move {
             Ok(RateLimitMiddleware {
                 service: Rc::new(service),
@@ -278,17 +277,25 @@ where
 }
 
 // global map
+struct RateMap(Mutex<FxHashMap<String, (u32, Instant)>>);
+
+impl Default for RateMap {
+    fn default() -> Self {
+        Self(Mutex::new(FxHashMap::default()))
+    }
+}
+
 fn map() -> &'static Mutex<FxHashMap<String, (u32, Instant)>> {
-    static MAP: OnceCell<Mutex<FxHashMap<String, (u32, Instant)>>> = OnceCell::new();
-    MAP.get_or_init(|| Mutex::new(FxHashMap::default()))
+    static MAP: OnceCell<RateMap> = OnceCell::new();
+    &MAP.get_or_init(RateMap::default).0
 }
 
 // guard for recycle future.
-fn recycle(interval: Option<Duration>, recycle_interval: Option<Duration>) -> &'static () {
-    static GC: OnceCell<()> = OnceCell::new();
+struct RateRecycle;
+
+fn recycle(interval: Duration, recycle_interval: Duration) -> &'static RateRecycle {
+    static GC: OnceCell<RateRecycle> = OnceCell::new();
     GC.get_or_init(|| {
-        let interval = interval.unwrap_or(DEFAULT_INTERVAL);
-        let recycle_interval = recycle_interval.unwrap_or(DEFAULT_RECYCLE_INTERVAL);
         let mut recycle_interval = tokio::time::interval(recycle_interval);
         tokio::spawn(async move {
             loop {
@@ -299,5 +306,6 @@ fn recycle(interval: Option<Duration>, recycle_interval: Option<Duration>) -> &'
                 });
             }
         });
+        RateRecycle
     })
 }

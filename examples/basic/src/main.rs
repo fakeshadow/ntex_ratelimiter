@@ -20,7 +20,7 @@ async fn main() -> std::io::Result<()> {
             )
             .service(no_params)
     })
-    .bind("0.0.0.0:8081")?
+    .bind("0.0.0.0:8000")?
     .run()
     .await
 }
