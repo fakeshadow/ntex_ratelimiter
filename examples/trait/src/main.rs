@@ -13,16 +13,18 @@ async fn no_params() -> &'static str {
 #[ntex_rt::main]
 async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
-        App::new()
-            .wrap(RateLimiter::new().identifier(MyIdentifier).filter(MyFilter))
-            .service(no_params)
+        let rate_limiter = RateLimiter::new(MyIdentifier, MyFilter);
+        App::new().wrap(rate_limiter).service(no_params)
     })
-    .bind("0.0.0.0:8081")?
+    .bind("0.0.0.0:8000")?
     .run()
     .await
 }
 
-// use custom trait object as identifier for rate limit middleware.
+// Use custom type as identifier for rate limit middleware.
+// The type has to impl with Clone
+// The clone only happen when constructing the middleware so the cost is minimal
+#[derive(Clone)]
 struct MyIdentifier;
 
 impl<Any> Identifier<Any> for MyIdentifier {
@@ -35,7 +37,10 @@ impl<Any> Identifier<Any> for MyIdentifier {
     }
 }
 
-// custom filter to skip rate limiter
+// Use custom type as filter for rate limit middleware.
+// The type has to impl with Clone
+// The clone only happen when constructing the middleware so the cost is minimal
+#[derive(Clone)]
 struct MyFilter;
 
 impl<Any> Filter<Any> for MyFilter {
