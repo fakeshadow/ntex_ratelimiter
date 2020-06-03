@@ -306,10 +306,9 @@ struct RateRecycle;
 fn recycle(interval: Duration, recycle_interval: Duration) -> &'static RateRecycle {
     static GC: OnceCell<RateRecycle> = OnceCell::new();
     GC.get_or_init(|| {
-        let mut recycle_interval = tokio::time::interval(recycle_interval);
-        tokio::task::spawn_local(async move {
+        ntex::rt::spawn(async move {
             loop {
-                let _ = recycle_interval.tick().await;
+                ntex::rt::time::delay_for(recycle_interval).await;
                 let now = Instant::now();
                 map().lock().retain(|_, (count, instant)| {
                     now.duration_since(*instant) < interval || *count > 0

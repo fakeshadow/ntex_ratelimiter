@@ -20,4 +20,3 @@ fxhash = "0.2.1"
 ntex = "0.1.17"
 once_cell = "1.4.0"
 parking_lot = "0.10.2"
-tokio = { version = "0.2.21", default-features = false, features = ["rt-util", "time"] }

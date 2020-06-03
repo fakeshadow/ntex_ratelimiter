@@ -755,7 +755,6 @@ dependencies = [
  "ntex",
  "once_cell",
  "parking_lot",
- "tokio",
 ]
 
 [[package]]
